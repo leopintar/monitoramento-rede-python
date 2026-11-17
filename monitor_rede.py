@@ -1,4 +1,5 @@
 import os
+import json
 import platform
 import subprocess
 import smtplib
@@ -7,25 +8,36 @@ from email.message import EmailMessage
 from datetime import datetime
 
 # ==============================================================================
-# CONFIGURAÇÕES DO AMBIENTE E ATIVOS DE REDE
+# PROJETO: MONITORAMENTO AUTOMATIZADO DE ATIVOS DE REDE (PYTHON + JSON STATE)
+# Autor: Leonardo de Freitas Pintar
+# Descrição: Verifica disponibilidade ICMP de switches, roteadores e servidores,
+#            controla falhas consecutivas via JSON para evitar falsos positivos
+#            e dispara alertas SMTP de queda e normalização.
 # ==============================================================================
+
 ATIVOS_CRITICOS = {
-    "Servidor AD / DNS Principal": "192.168.1.10",
-    "Servidor de Arquivos (File Server)": "192.168.1.15",
-    "Switch Core - Sala de Servidores": "192.168.1.2",
-    "Gateway / Firewall Corporativo": "192.168.1.1",
-    "Impressora Térmica - Expedição": "192.168.1.120"
+    "Roteador Principal / Gateway": "192.168.1.1",
+    "Switch Core": "192.168.1.10",
+    "Switch de Acesso - Setor Operacional": "192.168.1.11",
+    "Servidor de Arquivos & AD": "192.168.1.20",
+    "Servidor ERP / Banco de Dados": "192.168.1.25"
 }
 
-# Configurações de E-mail (Utiliza variáveis de ambiente por segurança)
-SMTP_SERVER = "smtp.office365.com"
-SMTP_PORT = 587
-EMAIL_REMETENTE = os.getenv("MONITOR_EMAIL_USER", "alertas.ti@empresa.com.br")
-EMAIL_SENHA = os.getenv("MONITOR_EMAIL_PASS", "sua_senha_de_app_aqui")
-EMAIL_DESTINATARIO = "infraestrutura@empresa.com.br"
+# Tolerância de falhas consecutivas antes de disparar alerta crítico
+LIMITE_FALHAS = 3
 
-# Configuração de Logs de Auditoria
-ARQUIVO_LOG = "historico_disponibilidade.log"
+# Caminhos absolutos baseados no diretório do script (ideal para Task Scheduler)
+DIRETORIO_BASE = os.path.dirname(os.path.abspath(__file__))
+ARQUIVO_ESTADO = os.path.join(DIRETORIO_BASE, "estado_monitoramento.json")
+ARQUIVO_LOG = os.path.join(DIRETORIO_BASE, "historico_disponibilidade.log")
+
+# Configurações de E-mail via variáveis de ambiente (boa prática de segurança)
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+EMAIL_REMETENTE = os.getenv("MONITOR_EMAIL_USER", "alertas.infra@empresa.com.br")
+EMAIL_SENHA = os.getenv("MONITOR_EMAIL_PASS", "sua_senha_de_app_aqui")
+EMAIL_DESTINATARIO = "equipe.ti@empresa.com.br"
+
 logging.basicConfig(
     filename=ARQUIVO_LOG,
     level=logging.INFO,
@@ -34,52 +46,45 @@ logging.basicConfig(
 )
 
 
-def verificar_conectividade(ip: str) -> bool:
-    """
-    Executa um teste ICMP (Ping) compatível com Windows e Linux.
-    Retorna True se o host responder, False caso contrário.
-    """
-    parametro = "-n" if platform.system().lower() == "windows" else "-c"
-    timeout_param = "-w" if platform.system().lower() == "windows" else "-W"
-    timeout_val = "1000" if platform.system().lower() == "windows" else "1"
+def carregar_estado() -> dict:
+    """Carrega o histórico de falhas consecutivas salvo em JSON."""
+    if os.path.exists(ARQUIVO_ESTADO):
+        try:
+            with open(ARQUIVO_ESTADO, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return {}
+    return {}
 
-    comando = ["ping", parametro, "2", timeout_param, timeout_val, ip]
-    resposta = subprocess.run(
+
+def salvar_estado(estado: dict) -> None:
+    """Persiste o estado atual de disponibilidade dos ativos em JSON."""
+    with open(ARQUIVO_ESTADO, "w", encoding="utf-8") as f:
+        json.dump(estado, f, indent=4, ensure_ascii=False)
+
+
+def verificar_ping(ip: str) -> bool:
+    """Executa teste ICMP compatível com Windows e Linux."""
+    sistema = platform.system().lower()
+    param_count = "-n" if sistema == "windows" else "-c"
+    param_timeout = "-w" if sistema == "windows" else "-W"
+    valor_timeout = "1000" if sistema == "windows" else "1"
+
+    comando = ["ping", param_count, "2", param_timeout, valor_timeout, ip]
+    resultado = subprocess.run(
         comando,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
-    return resposta.returncode == 0
+    return resultado.returncode == 0
 
 
-def enviar_alerta_email(ativos_offline: list):
-    """
-    Dispara um e-mail automático para a equipe de Infraestrutura
-    listando os dispositivos que apresentaram falha de comunicação.
-    """
-    data_hora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+def enviar_notificacao(assunto: str, corpo: str) -> None:
+    """Envia alerta por e-mail via SMTP com criptografia TLS."""
     msg = EmailMessage()
-    msg["Subject"] = f"[ALERTA CRÍTICO DE INFRAESTRUTURA] Ativos Offline - {data_hora}"
+    msg["Subject"] = assunto
     msg["From"] = EMAIL_REMETENTE
     msg["To"] = EMAIL_DESTINATARIO
-
-    lista_formatada = "\n".join(
-        [f" - {nome} (IP: {ip})" for nome, ip in ativos_offline]
-    )
-
-    corpo = f"""Prezados,
-
-O sistema de monitoramento automático detectou falha de comunicação (ICMP Timeout) nos seguintes ativos de rede:
-
-{lista_formatada}
-
-Data/Hora da verificação: {data_hora}
-
-Ação recomendada: Verificar links físicos, portas de switches correspondentes e status dos serviços nos servidores.
-
---
-Script de Monitoramento Automatizado de Infraestrutura (Python)
-"""
     msg.set_content(corpo)
 
     try:
@@ -87,40 +92,70 @@ Script de Monitoramento Automatizado de Infraestrutura (Python)
             server.starttls()
             server.login(EMAIL_REMETENTE, EMAIL_SENHA)
             server.send_message(msg)
-        logging.info("Alerta de e-mail enviado com sucesso para a equipe de TI.")
+        logging.info(f"Notificação enviada: {assunto}")
     except Exception as erro:
-        logging.error(f"Falha ao enviar e-mail de alerta: {erro}")
+        logging.error(f"Erro ao enviar e-mail ({assunto}): {erro}")
 
 
-def executar_monitoramento():
-    """
-    Percorre a lista de ativos críticos, registra logs e aciona alertas se necessário.
-    """
-    print("=" * 65)
-    print(f"INICIANDO VERIFICAÇÃO DE ATIVOS DE REDE - {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
-    print("=" * 65)
+def executar_verificacao() -> None:
+    """Rotina principal de monitoramento com controle de estado e histerese."""
+    estado = carregar_estado()
+    agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
-    ativos_offline = []
+    quedas_confirmadas = []
+    ativos_recuperados = []
+
+    print(f"[{agora}] Iniciando varredura de {len(ATIVOS_CRITICOS)} ativos...")
 
     for nome, ip in ATIVOS_CRITICOS.items():
-        online = verificar_conectividade(ip)
-        if online:
-            status_msg = f"ONLINE  | {nome} ({ip})"
-            print(f"[OK]   {status_msg}")
-            logging.info(status_msg)
-        else:
-            status_msg = f"OFFLINE | {nome} ({ip}) - Sem resposta ICMP"
-            print(f"[ERRO] {status_msg}")
-            logging.warning(status_msg)
-            ativos_offline.append((nome, ip))
+        if ip not in estado:
+            estado[ip] = {"nome": nome, "falhas_consecutivas": 0, "alerta_enviado": False}
 
-    print("=" * 65)
-    if ativos_offline:
-        print(f"ATENÇÃO: {len(ativos_offline)} ativo(s) offline detectado(s). Acionando alerta...")
-        enviar_alerta_email(ativos_offline)
-    else:
-        print("Status Global: Todos os ativos críticos estão operacionais (100% Online).")
+        online = verificar_ping(ip)
+
+        if online:
+            # Se estava em alerta e voltou a responder, notifica normalização
+            if estado[ip]["alerta_enviado"]:
+                ativos_recuperados.append((nome, ip))
+                logging.info(f"RECUPERADO | {nome} ({ip}) voltou a responder.")
+
+            estado[ip]["falhas_consecutivas"] = 0
+            estado[ip]["alerta_enviado"] = False
+            print(f"[OK]     {nome} ({ip})")
+        else:
+            estado[ip]["falhas_consecutivas"] += 1
+            qtd_falhas = estado[ip]["falhas_consecutivas"]
+            print(f"[FALHA]  {nome} ({ip}) - Falha {qtd_falhas}/{LIMITE_FALHAS}")
+            logging.warning(f"TIMEOUT | {nome} ({ip}) - Tentativa {qtd_falhas}/{LIMITE_FALHAS}")
+
+            # Dispara alerta apenas ao atingir o limite e evita spam nas execuções seguintes
+            if qtd_falhas >= LIMITE_FALHAS and not estado[ip]["alerta_enviado"]:
+                quedas_confirmadas.append((nome, ip, qtd_falhas))
+                estado[ip]["alerta_enviado"] = True
+
+    salvar_estado(estado)
+
+    if quedas_confirmadas:
+        lista_quedas = "\n".join(
+            [f" - {nome} (IP: {ip}) | {falhas} verificações sem resposta" for nome, ip, falhas in quedas_confirmadas]
+        )
+        corpo_alerta = (
+            f"ALERTA CRÍTICO DE INFRAESTRUTURA ({agora})\n\n"
+            f"Os seguintes ativos atingiram o limite de indisponibilidade:\n\n"
+            f"{lista_quedas}\n\n"
+            f"Ação recomendada: Verificar link físico, portas de uplink e alimentação."
+        )
+        enviar_notificacao(f"[CRÍTICO] Indisponibilidade de Rede Detectada - {agora}", corpo_alerta)
+
+    if ativos_recuperados:
+        lista_rec = "\n".join([f" - {nome} (IP: {ip})" for nome, ip in ativos_recuperados])
+        corpo_rec = (
+            f"NORMALIZAÇÃO DE SERVIÇO ({agora})\n\n"
+            f"Os seguintes ativos restabeleceram comunicação ICMP:\n\n"
+            f"{lista_rec}"
+        )
+        enviar_notificacao(f"[NORMALIZADO] Ativos de Rede Online - {agora}", corpo_rec)
 
 
 if __name__ == "__main__":
-    executar_monitoramento()
+    executar_verificacao()
