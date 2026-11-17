@@ -1,55 +1,37 @@
 # 🌐 Monitoramento Automatizado de Ativos de Rede em Python
 
-Ferramenta desenvolvida em **Python** para verificação contínua de disponibilidade (ICMP/Ping) de ativos críticos de infraestrutura de TI (Servidores Windows/Linux, Switches, Roteadores e Impressoras de rede), com geração de logs de auditoria e disparo automático de alertas por e-mail via protocolo SMTP.
+Solução desenvolvida em **Python** para monitoramento contínuo de disponibilidade (ICMP/Ping) de switches, roteadores e servidores críticos, com persistência de estado em **JSON** para eliminação de falsos positivos, geração de logs de auditoria e alertas automáticos de queda e normalização via **SMTP**.
 
 ---
 
-## 🎯 Problema de Negócio e Solução
-Em ambientes corporativos e industriais, identificar rapidamente a queda de um switch, servidor ou impressora crítica é essencial para manter a disponibilidade operacional e cumprir os indicadores de **SLA** no Service Desk (**GLPI**).
+## 🎯 Problema Resolvido e Arquitetura
+Em ambientes corporativos e industriais, a perda isolada de um único pacote não significa necessariamente que um switch ou servidor caiu. Para evitar alertas desnecessários (*alert fatigue*) e, ao mesmo tempo, garantir resposta rápida antes que os usuários abram chamados no Service Desk (**GLPI**), o script implementa:
 
-Este projeto automatiza a verificação preventiva da infraestrutura:
-1. Testa a conectividade de uma lista configurável de IPs críticos (compatível com **Windows** e **Linux**).
-2. Registra todas as ocorrências em um arquivo de log estruturado (`historico_disponibilidade.log`) para análise de estabilidade.
-3. Dispara automaticamente um **alerta por e-mail** para a equipe de Infraestrutura caso algum equipamento fique indisponível.
+1. **Controle de Estado Persistente (`estado_monitoramento.json`):** Contabiliza falhas consecutivas por endereço IP entre execuções agendadas. O alerta crítico só é disparado quando o ativo atinge o limite configurado (`LIMITE_FALHAS`).
+2. **Prevenção de Spam e Notificação de Recuperação:** Após disparar o alerta de queda, o sistema marca o incidente como notificado e envia um novo e-mail automático assim que a conectividade é restabelecida.
+3. **Resolução Dinâmica de Caminhos (`os.path`):** Permite execução em segundo plano no **Agendador de Tarefas do Windows (`pythonw.exe`)** ou via **Cron no Linux** sem falhas de diretório relativo.
 
 ---
 
 ## 🛠️ Tecnologias Utilizadas
-* **Python 3.x** (Bibliotecas nativas: `subprocess`, `smtplib`, `logging`, `platform`, `email`)
-* **Protocolos de Rede:** ICMP (Echo Request / Echo Reply) e SMTP com criptografia TLS
-* **Automação de S.O.:** Integração direta com o **Agendador de Tarefas do Windows (Task Scheduler)** ou **Cron (Linux)**
+* **Python 3.x** (`subprocess`, `json`, `smtplib`, `logging`, `platform`, `email`)
+* **Protocolos:** ICMP (Echo Request/Reply) e SMTP sobre TLS
+* **Orquestração:** Windows Task Scheduler (`pythonw.exe` para execução silenciosa) / Linux Crontab
 
 ---
 
-## ⚙️ Como Executar e Automatizar no Windows
+## ⚙️ Como Configurar e Automatizar
 
 1. Clone o repositório:
    ```bash
    git clone [https://github.com/leopintar/monitoramento-rede-python.git](https://github.com/leopintar/monitoramento-rede-python.git)
+   ```
+2. Edite o dicionário `ATIVOS_CRITICOS` e a variável `LIMITE_FALHAS` em `monitor_rede.py` conforme a topologia da sua rede.
+3. Defina as variáveis de ambiente de autenticação SMTP no sistema operacional (`MONITOR_EMAIL_USER` e `MONITOR_EMAIL_PASS`).
+4. **Agendamento Silencioso no Windows:**
+   * Abra o **Agendador de Tarefas (`taskschd.msc`)** > **Criar Tarefa**.
+   * Configure o disparador para repetir a cada **1 ou 5 minutos**.
+   * Em **Ações**, aponte o programa para `pythonw.exe` (evita abertura de janela de terminal) e passe o caminho completo de `monitor_rede.py` como argumento.
 
-2. Configure os IPs dos ativos da sua rede no dicionário ATIVOS_CRITICOS dentro de monitor_rede.py.
-
-3. Para execução contínua automática no Windows:
-
-    Abra o Agendador de Tarefas (taskschd.msc) > Criar Tarefa Básica.
-
-    Defina o disparador para repetir a cada 5 ou 10 minutos.
-
-    Em Ação, selecione Iniciar um programa, aponte para o executável do python.exe e adicione o caminho do script monitor_rede.py nos argumentos.
-
-
-Exemplo de Saída no Console / Log
-
-=================================================================
-INICIANDO VERIFICAÇÃO DE ATIVOS DE REDE - 09/11/2026 16:00:01
-=================================================================
-[OK]   ONLINE  | Servidor AD / DNS Principal (192.168.1.10)
-[OK]   ONLINE  | Servidor de Arquivos (File Server) (192.168.1.15)
-[OK]   ONLINE  | Switch Core - Sala de Servidores (192.168.1.2)
-[OK]   ONLINE  | Gateway / Firewall Corporativo (192.168.1.1)
-[ERRO] OFFLINE | Impressora Térmica - Expedição (192.168.1.120) - Sem resposta ICMP
-=================================================================
-ATENÇÃO: 1 ativo(s) offline detectado(s). Acionando alerta...
-
-
-Desenvolvido por: Leonardo de Freitas Pintar — Engenheiro de Computação & Analista de Infraestrutura de TI
+---
+**Desenvolvido por:** [Leonardo de Freitas Pintar](https://github.com/leopintar) — *Engenheiro de Computação | Infraestrutura, Redes & Automação*
